@@ -1,0 +1,218 @@
+Rendering State Changes
+The next step is integrating the code from renderCharts() into the Backbone application. You can add them one at a time to the view, starting with the population growth chart.
+Population Growth Chart
+First, create a function in the view to render the population growth chart:
+var CensusView = Backbone.View.extend({
+el: ".charts",
+template: _.template( $(".census-tpl").text() ),
+...
+render: function() {
+// render the main template
+var compiled = this.template( this.model.toJSON() );
+this.$el.html(compiled);
+// create the charts from this markup
+this.renderPopulation();
+return this;
+},
+renderPopulation: function() {
+$.ajax({
+url: "http://api.census.gov/data/2013/pep/natstprc",
+data: {
+get: "POP,DATE",
+for: this.model.get("loc_query"),
+key: this.model.get("api_key")
+},
+success: function(data) {
+var processed = [
+["Year", "Population"]
+];
+for ( i in data ) {
+if ( i == 0 ) continue;
+processed[i] = [ ∼∼data[i][1] + 2007, ∼∼data[i][0] ];
+}
+var chartData = google.visualization.arrayToDataTable(processed);
+var options = {
+title: "Population Growth",
+legend: "none"
+};
+var chart = new google.visualization.LineChart(
+document.getElementById("population-chart")
+);
+chart.draw(chartData, options);
+}
+});
+}
+});
+Here the script is largely the same as before, with one key difference: You've added dynamic references to the model's api_key and loc_query values. You should already have the api_key from when you instantiated the census model, but you still need to do a bit of work to generate the loc_query string, which helps drive the APIs. Add a bit of code to the model that creates this loc_query whenever the loc value is modified:
+var Census = Backbone.Model.extend({
+defaults: {
+loc: "00",
+loc_str: "United States"
+},
+validate: function( options ) {
+if ( ! options.api_key ) {
+return "You must enter your API key from www.census.gov/developers/";
+}
+},
+// creates new location string for API
+buildLocQuery: function() {
+var loc = this.get("loc");
+if ( loc === "00" ) {
+this.set("loc_query", "us");
+}
+else {
+this.set("loc_query", "state:" + loc);
+}
+},
+initialize: function() {
+this.on("invalid", function(e, error) {
+console.log(error);
+});
+this.on("change:loc", this.buildLocQuery, this);
+this.buildLocQuery();
+}
+});
+This code adds a buildLocQuery() function to the Census model, which creates a query string from this data, switching between national and state-specific data. This function is called both when the model initializes and also any time the loc value in the model changes. That ensures that loc_query stays fresh.
+Now if you load the script in your browser, you should see the first bit of dynamic behavior. It's only rendering the population growth chart so far, but that chart is changing dynamically as you switch states in the drop-down menu.
+National Versus State Data
+Next, you can follow the patterns in the population growth chart to establish the other charts. However, pulling national data for these other charts is a bit more complicated because the Census API doesn't aggregate much data nationally. For now, just disable these in the national view by making some changes to the template:
+<script type="template" class="census-tpl">
+<h1>
+Census Data - <%= loc_str %>
+</h1>
+<section class="population<%- (loc === "00" ? " single" : "" ) %>">
+<h2>
+Population
+</h2>
+<div id="population-chart" class="chart"></div>
+<%
+if ( loc !== "00" ) {
+%>
+<div id="age-chart" class="chart"></div>
+<%
+}
+%>
+</section>
+<%
+if ( loc !== "00" ) {
+%>
+<section class="demographics">
+<h2>
+Demographics
+</h2>
+<div id="race-chart" class="chart"></div>
+<div id="sex-chart" class="chart"></div>
+</section>
+<section class="housing">
+<h2>
+Housing
+</h2>
+<div id="household-chart" class="chart"></div>
+<div id="tenure-chart" class="chart"></div>
+</section>
+<%
+}
+%>
+</script>
+As you can see, a few hooks have been added to remove the markup for certain charts at the national level (whenever loc === "00"). Additionally, as you build the other charts, you can add these hooks to your render function.
+Age by Sex Chart
+Now add the age by sex chart into your view object:
+renderAge: function() {
+// get sex by age
+// build age request string
+function build_age_request_string(offset) {
+var out = "";
+for ( var i = 0; i < 23; i++ ) {
+var this_index = ("0" + (i + offset)).slice(-2);
+out += "P01200" + this_index + ",";
+}
+return out;
+}
+var age_request_keys = build_age_request_string(3) +
+build_age_request_string(27);
+age_request_keys = age_request_keys.slice(0,-1);
+$.ajax({
+url: "http://api.census.gov/data/2010/sf1",
+data: {
+get: age_request_keys,
+for: this.model.get("loc_query"),
+key: this.model.get("api_key")
+},
+success: function(data) {
+var male_data = data[1].slice(0,23),
+female_data = data[1].slice(23,46);
+// merge the dissimilar age ranges
+function combine_vals(arr, start, end) {
+var total = 0;
+for ( var i = start; i <= end; i++ ) {
+total += arr[i];
+}
+arr[start] = total;
+arr.splice( start + 1, end - start);
+return arr;
+}
+function clean_age_range( age_data ) {
+// convert all the values to numeric
+for ( var i in age_data ) {
+age_data[i] = ∼∼age_data[i];
+}
+// merge values starting with highest (to preserve array keys)
+// merge 65-66 && 67-69
+age_data = combine_vals( age_data, 17, 18 );
+// merge 60-61 & 62-64
+age_data = combine_vals( age_data, 15, 16 );
+// merge 20, 21 & 22-24
+age_data = combine_vals( age_data, 5, 7 );
+// merge 15-17 & 18-19
+age_data = combine_vals( age_data, 3, 4 );
+return age_data;
+}
+male_data = clean_age_range(male_data);
+female_data = clean_age_range(female_data);
+var processed = [
+["Age", "Male", "Female"]
+];
+for ( var i = 0, max = male_data.length; i < max; i++ ) {
+var row = [];
+switch(i) {
+case 0:
+row[0] = "Under 5";
+break;
+default:
+row[0] = (i * 5) + "-" + (i * 5 + 4);
+break;
+case max - 1:
+row[0] = (i * 5) + "+";
+break;
+}
+row[1] = male_data[i];
+row[2] = female_data[i];
+processed.push(row);
+}
+var chartData = google.visualization.arrayToDataTable(processed);
+var options = {
+title: "Age"
+};
+var chart = new google.visualization.ColumnChart(
+document.getElementById("age-chart")
+);
+chart.draw(chartData, options);
+}
+});
+},
+Again, the only differences between this script and the one previous are the dynamic references to the model's loc_query and api_key values. Next, add this call to the view's render() function, making sure to disable it at the national level:
+render: function() {
+// render the main template
+var compiled = this.template( this.model.toJSON() );
+this.$el.html(compiled);
+// create the charts from this markup
+this.renderPopulation();
+// render the other charts if not the national data
+if ( this.model.get("loc") !== "00" ) {
+this.renderAge();
+}
+return this;
+},
+
+
+
